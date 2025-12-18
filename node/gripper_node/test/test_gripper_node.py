@@ -76,6 +76,20 @@ class TestGripperNodeInit:
         assert node._epsilon_inner == 0.005
         assert node._epsilon_outer == 0.005
         assert node._action_namespace == 'fr3_gripper'
+        assert node._action_timeout == 10.0
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_async_state_variables_initialized(self, mock_action_client):
+        """비동기 처리용 상태 변수가 초기화되는지 확인"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+
+        node = GripperNode()
+
+        assert node._action_result is None
+        assert node._action_event is not None
+        assert not node._action_event.is_set()
 
         node.destroy_node()
 
@@ -290,6 +304,131 @@ class TestGripperNodeSimulationMode:
 
         assert success == True  # 시뮬레이션 모드에서는 항상 성공
         assert grasped == True
+
+        node.destroy_node()
+
+
+class TestGripperNodeServiceHandlers:
+    """서비스 핸들러 통합 테스트"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """테스트 전 ROS 2 초기화"""
+        rclpy.init()
+        yield
+        rclpy.shutdown()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_open_simulation_success(self, mock_action_client):
+        """시뮬레이션 모드에서 open 서비스 성공"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+        mock_action_client.return_value.server_is_ready.return_value = False
+
+        node = GripperNode()
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_open(request, response)
+
+        assert result.success == True
+        assert 'opened' in result.message
+        assert node._current_width == node._max_width
+        assert node._is_grasping == False
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_close_simulation_success(self, mock_action_client):
+        """시뮬레이션 모드에서 close 서비스 성공"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+        mock_action_client.return_value.server_is_ready.return_value = False
+
+        node = GripperNode()
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_close(request, response)
+
+        assert result.success == True
+        assert 'closed' in result.message
+        assert node._current_width == 0.0
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_grasp_simulation_success(self, mock_action_client):
+        """시뮬레이션 모드에서 grasp 서비스 성공"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+        mock_action_client.return_value.server_is_ready.return_value = False
+
+        node = GripperNode()
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_grasp(request, response)
+
+        assert result.success == True
+        assert 'grasped' in result.message
+        assert node._is_grasping == True
+        assert node._current_state == GripperState.HOLDING
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_open_busy_rejection(self, mock_action_client):
+        """busy 상태에서 open 요청 거부"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+
+        node = GripperNode()
+        node._is_busy = True
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_open(request, response)
+
+        assert result.success == False
+        assert 'busy' in result.message.lower()
+        assert node._last_error == GripperError.BUSY
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_close_busy_rejection(self, mock_action_client):
+        """busy 상태에서 close 요청 거부"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+
+        node = GripperNode()
+        node._is_busy = True
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_close(request, response)
+
+        assert result.success == False
+        assert 'busy' in result.message.lower()
+
+        node.destroy_node()
+
+    @patch('gripper_node.gripper_node.ActionClient')
+    def test_handle_grasp_busy_rejection(self, mock_action_client):
+        """busy 상태에서 grasp 요청 거부"""
+        mock_action_client.return_value.wait_for_server.return_value = False
+
+        node = GripperNode()
+        node._is_busy = True
+
+        request = Trigger.Request()
+        response = Trigger.Response()
+
+        result = node._handle_grasp(request, response)
+
+        assert result.success == False
+        assert 'busy' in result.message.lower()
 
         node.destroy_node()
 

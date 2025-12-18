@@ -8,6 +8,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.action import ActionClient
+from rclpy.executors import MultiThreadedExecutor
+import threading
+from concurrent.futures import Future as ConcurrentFuture
 
 from std_srvs.srv import Trigger
 from std_msgs.msg import Bool, Float64, String
@@ -40,6 +43,7 @@ class GripperNode(Node):
     Franka Hand 그리퍼 제어 노드
 
     libfranka SDK를 franka_gripper 액션 서버를 통해 사용합니다.
+    콜백 기반 비동기 처리로 서비스 콜백 내 블로킹 방지.
 
     Services:
         /gripper/open: 그리퍼 열기
@@ -61,7 +65,7 @@ class GripperNode(Node):
     DEFAULT_EPSILON_INNER = 0.005
     DEFAULT_EPSILON_OUTER = 0.005
     STATE_PUBLISH_RATE = 10.0
-    ACTION_TIMEOUT = 10.0
+    DEFAULT_ACTION_TIMEOUT = 10.0
     MAX_RETRY_COUNT = 3
 
     def __init__(self):
@@ -86,6 +90,7 @@ class GripperNode(Node):
         self.declare_parameter('gripper_epsilon_inner', self.DEFAULT_EPSILON_INNER)
         self.declare_parameter('gripper_epsilon_outer', self.DEFAULT_EPSILON_OUTER)
         self.declare_parameter('gripper_action_namespace', 'fr3_gripper')
+        self.declare_parameter('gripper_action_timeout', self.DEFAULT_ACTION_TIMEOUT)
 
         self._max_width = self.get_parameter('gripper_max_width').value
         self._default_speed = self.get_parameter('gripper_default_speed').value
@@ -93,6 +98,7 @@ class GripperNode(Node):
         self._epsilon_inner = self.get_parameter('gripper_epsilon_inner').value
         self._epsilon_outer = self.get_parameter('gripper_epsilon_outer').value
         self._action_namespace = self.get_parameter('gripper_action_namespace').value
+        self._action_timeout = self.get_parameter('gripper_action_timeout').value
 
     def _create_action_clients(self):
         """franka_gripper 액션 클라이언트 생성"""
@@ -127,6 +133,9 @@ class GripperNode(Node):
         self._last_error_message = ''
         self._is_busy = False
         self._retry_count = 0
+        # 콜백 기반 비동기 처리용
+        self._action_result = None
+        self._action_event = threading.Event()
 
     def _create_services(self):
         """서비스 생성"""
@@ -349,7 +358,7 @@ class GripperNode(Node):
         return response
 
     def _execute_open(self) -> bool:
-        """그리퍼 열기 실행 (Move 액션)"""
+        """그리퍼 열기 실행 (Move 액션) - 콜백 기반 비동기 처리"""
         self.get_logger().info(f'Opening to width: {self._max_width}m, speed: {self._default_speed}m/s')
 
         if not self._move_action_client.server_is_ready():
@@ -360,36 +369,59 @@ class GripperNode(Node):
         goal.width = self._max_width
         goal.speed = self._default_speed
 
-        future = self._move_action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
+        # 이벤트 초기화
+        self._action_event.clear()
+        self._action_result = None
 
-        if not future.done():
-            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send open goal')
-            return False
+        # 콜백 기반 비동기 goal 전송
+        send_goal_future = self._move_action_client.send_goal_async(goal)
+        send_goal_future.add_done_callback(self._on_move_goal_response)
 
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self._set_error(GripperError.GOAL_REJECTED, 'Open goal rejected by action server')
-            return False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
-
-        if not result_future.done():
+        # 타임아웃과 함께 이벤트 대기 (executor에서 콜백 처리)
+        if not self._action_event.wait(timeout=self._action_timeout):
             self._set_error(GripperError.ACTION_TIMEOUT, 'Open action timed out')
             return False
 
-        result = result_future.result().result
-        if result.success:
+        if self._action_result is None:
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to get open result')
+            return False
+
+        if self._action_result.success:
             self._current_width = self._max_width
             self.get_logger().info('Gripper opened successfully')
         else:
-            self._set_error(GripperError.EXECUTION_FAILED, f'Open failed: {result.error}')
+            self._set_error(GripperError.EXECUTION_FAILED, f'Open failed: {self._action_result.error}')
 
-        return result.success
+        return self._action_result.success
+
+    def _on_move_goal_response(self, future):
+        """Move 액션 goal 응답 콜백"""
+        try:
+            goal_handle = future.result()
+            if not goal_handle.accepted:
+                self._set_error(GripperError.GOAL_REJECTED, 'Move goal rejected by action server')
+                self._action_event.set()
+                return
+
+            # 결과 비동기 대기
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(self._on_move_result)
+        except Exception as e:
+            self._set_error(GripperError.COMMUNICATION_ERROR, f'Goal response error: {e}')
+            self._action_event.set()
+
+    def _on_move_result(self, future):
+        """Move 액션 결과 콜백"""
+        try:
+            self._action_result = future.result().result
+        except Exception as e:
+            self._set_error(GripperError.COMMUNICATION_ERROR, f'Result error: {e}')
+            self._action_result = None
+        finally:
+            self._action_event.set()
 
     def _execute_close(self) -> bool:
-        """그리퍼 닫기 실행 (Move 액션)"""
+        """그리퍼 닫기 실행 (Move 액션) - 콜백 기반 비동기 처리"""
         self.get_logger().info(f'Closing gripper, speed: {self._default_speed}m/s')
 
         if not self._move_action_client.server_is_ready():
@@ -400,36 +432,33 @@ class GripperNode(Node):
         goal.width = 0.0
         goal.speed = self._default_speed
 
-        future = self._move_action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
+        # 이벤트 초기화
+        self._action_event.clear()
+        self._action_result = None
 
-        if not future.done():
-            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send close goal')
-            return False
+        # 콜백 기반 비동기 goal 전송
+        send_goal_future = self._move_action_client.send_goal_async(goal)
+        send_goal_future.add_done_callback(self._on_move_goal_response)
 
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self._set_error(GripperError.GOAL_REJECTED, 'Close goal rejected by action server')
-            return False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
-
-        if not result_future.done():
+        # 타임아웃과 함께 이벤트 대기
+        if not self._action_event.wait(timeout=self._action_timeout):
             self._set_error(GripperError.ACTION_TIMEOUT, 'Close action timed out')
             return False
 
-        result = result_future.result().result
-        if result.success:
+        if self._action_result is None:
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to get close result')
+            return False
+
+        if self._action_result.success:
             self._current_width = 0.0
             self.get_logger().info('Gripper closed successfully')
         else:
-            self._set_error(GripperError.EXECUTION_FAILED, f'Close failed: {result.error}')
+            self._set_error(GripperError.EXECUTION_FAILED, f'Close failed: {self._action_result.error}')
 
-        return result.success
+        return self._action_result.success
 
     def _execute_grasp(self) -> tuple[bool, bool]:
-        """파지 실행 (Grasp 액션)"""
+        """파지 실행 (Grasp 액션) - 콜백 기반 비동기 처리"""
         self.get_logger().info(
             f'Grasping with force: {self._default_force}N, speed: {self._default_speed}m/s'
         )
@@ -445,45 +474,73 @@ class GripperNode(Node):
         goal.epsilon.inner = self._epsilon_inner
         goal.epsilon.outer = self._epsilon_outer
 
-        future = self._grasp_action_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
+        # 이벤트 초기화
+        self._action_event.clear()
+        self._action_result = None
 
-        if not future.done():
-            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send grasp goal')
-            return False, False
+        # 콜백 기반 비동기 goal 전송
+        send_goal_future = self._grasp_action_client.send_goal_async(goal)
+        send_goal_future.add_done_callback(self._on_grasp_goal_response)
 
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self._set_error(GripperError.GOAL_REJECTED, 'Grasp goal rejected by action server')
-            return False, False
-
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
-
-        if not result_future.done():
+        # 타임아웃과 함께 이벤트 대기
+        if not self._action_event.wait(timeout=self._action_timeout):
             self._set_error(GripperError.ACTION_TIMEOUT, 'Grasp action timed out')
             return False, False
 
-        result = result_future.result().result
-        grasped = result.success
+        if self._action_result is None:
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to get grasp result')
+            return False, False
+
+        grasped = self._action_result.success
 
         if grasped:
             self.get_logger().info('Object grasped successfully')
         else:
-            self.get_logger().warn(f'Grasp completed but object not detected: {result.error}')
+            self.get_logger().warn(f'Grasp completed but object not detected: {self._action_result.error}')
 
         return True, grasped
+
+    def _on_grasp_goal_response(self, future):
+        """Grasp 액션 goal 응답 콜백"""
+        try:
+            goal_handle = future.result()
+            if not goal_handle.accepted:
+                self._set_error(GripperError.GOAL_REJECTED, 'Grasp goal rejected by action server')
+                self._action_event.set()
+                return
+
+            # 결과 비동기 대기
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(self._on_grasp_result)
+        except Exception as e:
+            self._set_error(GripperError.COMMUNICATION_ERROR, f'Goal response error: {e}')
+            self._action_event.set()
+
+    def _on_grasp_result(self, future):
+        """Grasp 액션 결과 콜백"""
+        try:
+            self._action_result = future.result().result
+        except Exception as e:
+            self._set_error(GripperError.COMMUNICATION_ERROR, f'Result error: {e}')
+            self._action_result = None
+        finally:
+            self._action_event.set()
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = GripperNode()
 
+    # MultiThreadedExecutor 사용으로 콜백 병렬 처리 가능
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         node.get_logger().info('Shutting down...')
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 
