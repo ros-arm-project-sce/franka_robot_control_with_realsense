@@ -10,7 +10,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.action import ActionClient
 
 from std_srvs.srv import Trigger
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float64, String
 from franka_msgs.action import Move, Grasp
 from enum import Enum
 
@@ -22,6 +22,17 @@ class GripperState(Enum):
     CLOSING = 2
     HOLDING = 3
     ERROR = 4
+
+
+class GripperError(Enum):
+    """그리퍼 에러 코드"""
+    NONE = 0
+    ACTION_SERVER_NOT_READY = 1
+    GOAL_REJECTED = 2
+    ACTION_TIMEOUT = 3
+    EXECUTION_FAILED = 4
+    COMMUNICATION_ERROR = 5
+    BUSY = 6
 
 
 class GripperNode(Node):
@@ -51,6 +62,7 @@ class GripperNode(Node):
     DEFAULT_EPSILON_OUTER = 0.005
     STATE_PUBLISH_RATE = 10.0
     ACTION_TIMEOUT = 10.0
+    MAX_RETRY_COUNT = 3
 
     def __init__(self):
         super().__init__('gripper_node')
@@ -111,6 +123,10 @@ class GripperNode(Node):
         self._current_state = GripperState.IDLE
         self._current_width = 0.0
         self._is_grasping = False
+        self._last_error = GripperError.NONE
+        self._last_error_message = ''
+        self._is_busy = False
+        self._retry_count = 0
 
     def _create_services(self):
         """서비스 생성"""
@@ -126,11 +142,21 @@ class GripperNode(Node):
             Trigger, 'gripper/grasp', self._handle_grasp,
             callback_group=self._callback_group
         )
+        self._srv_recover = self.create_service(
+            Trigger, 'gripper/recover', self._handle_recover,
+            callback_group=self._callback_group
+        )
+        self._srv_stop = self.create_service(
+            Trigger, 'gripper/stop', self._handle_stop,
+            callback_group=self._callback_group
+        )
 
     def _create_publishers(self):
         """퍼블리셔 생성"""
         self._pub_is_grasping = self.create_publisher(Bool, 'gripper/is_grasping', 10)
         self._pub_width = self.create_publisher(Float64, 'gripper/width', 10)
+        self._pub_state = self.create_publisher(String, 'gripper/state', 10)
+        self._pub_error = self.create_publisher(String, 'gripper/error', 10)
 
     def _create_timers(self):
         """타이머 생성"""
@@ -149,11 +175,50 @@ class GripperNode(Node):
         msg_width.data = self._current_width
         self._pub_width.publish(msg_width)
 
+        msg_state = String()
+        msg_state.data = self._current_state.name
+        self._pub_state.publish(msg_state)
+
+        msg_error = String()
+        if self._last_error != GripperError.NONE:
+            msg_error.data = f'{self._last_error.name}: {self._last_error_message}'
+        else:
+            msg_error.data = ''
+        self._pub_error.publish(msg_error)
+
+    def _set_error(self, error: GripperError, message: str):
+        """에러 상태 설정"""
+        self._last_error = error
+        self._last_error_message = message
+        self._current_state = GripperState.ERROR
+        self.get_logger().error(f'[{error.name}] {message}')
+
+    def _clear_error(self):
+        """에러 상태 클리어"""
+        self._last_error = GripperError.NONE
+        self._last_error_message = ''
+        if self._current_state == GripperState.ERROR:
+            self._current_state = GripperState.IDLE
+
+    def _check_busy(self) -> bool:
+        """바쁜 상태 체크 - True면 요청 거부해야 함"""
+        if self._is_busy:
+            self._set_error(GripperError.BUSY, 'Gripper is busy with another operation')
+            return True
+        return False
+
     def _handle_open(self, request, response):
         """그리퍼 열기"""
         self.get_logger().info('Opening gripper...')
 
+        if self._check_busy():
+            response.success = False
+            response.message = 'Gripper is busy'
+            return response
+
         try:
+            self._is_busy = True
+            self._clear_error()
             self._current_state = GripperState.OPENING
             success = self._execute_open()
 
@@ -164,15 +229,15 @@ class GripperNode(Node):
                 response.success = True
                 response.message = 'Gripper opened'
             else:
-                self._current_state = GripperState.ERROR
                 response.success = False
-                response.message = 'Failed to open gripper'
+                response.message = f'Failed to open gripper: {self._last_error_message}'
 
         except Exception as e:
-            self._current_state = GripperState.ERROR
+            self._set_error(GripperError.COMMUNICATION_ERROR, str(e))
             response.success = False
             response.message = f'Error: {str(e)}'
-            self.get_logger().error(response.message)
+        finally:
+            self._is_busy = False
 
         return response
 
@@ -180,7 +245,14 @@ class GripperNode(Node):
         """그리퍼 닫기"""
         self.get_logger().info('Closing gripper...')
 
+        if self._check_busy():
+            response.success = False
+            response.message = 'Gripper is busy'
+            return response
+
         try:
+            self._is_busy = True
+            self._clear_error()
             self._current_state = GripperState.CLOSING
             success = self._execute_close()
 
@@ -190,15 +262,15 @@ class GripperNode(Node):
                 response.success = True
                 response.message = 'Gripper closed'
             else:
-                self._current_state = GripperState.ERROR
                 response.success = False
-                response.message = 'Failed to close gripper'
+                response.message = f'Failed to close gripper: {self._last_error_message}'
 
         except Exception as e:
-            self._current_state = GripperState.ERROR
+            self._set_error(GripperError.COMMUNICATION_ERROR, str(e))
             response.success = False
             response.message = f'Error: {str(e)}'
-            self.get_logger().error(response.message)
+        finally:
+            self._is_busy = False
 
         return response
 
@@ -206,7 +278,14 @@ class GripperNode(Node):
         """물체 파지"""
         self.get_logger().info('Grasping object...')
 
+        if self._check_busy():
+            response.success = False
+            response.message = 'Gripper is busy'
+            return response
+
         try:
+            self._is_busy = True
+            self._clear_error()
             self._current_state = GripperState.CLOSING
             success, grasped = self._execute_grasp()
 
@@ -221,15 +300,51 @@ class GripperNode(Node):
                 response.success = False
                 response.message = 'No object detected'
             else:
-                self._current_state = GripperState.ERROR
                 response.success = False
-                response.message = 'Grasp failed'
+                response.message = f'Grasp failed: {self._last_error_message}'
 
         except Exception as e:
-            self._current_state = GripperState.ERROR
+            self._set_error(GripperError.COMMUNICATION_ERROR, str(e))
             response.success = False
             response.message = f'Error: {str(e)}'
-            self.get_logger().error(response.message)
+        finally:
+            self._is_busy = False
+
+        return response
+
+    def _handle_recover(self, request, response):
+        """에러 복구"""
+        self.get_logger().info('Recovering from error...')
+
+        if self._current_state != GripperState.ERROR:
+            response.success = True
+            response.message = 'No error to recover from'
+            return response
+
+        self._clear_error()
+        self._is_busy = False
+        self._retry_count = 0
+        self._current_state = GripperState.IDLE
+
+        response.success = True
+        response.message = 'Error cleared, gripper ready'
+        self.get_logger().info('Gripper recovered successfully')
+        return response
+
+    def _handle_stop(self, request, response):
+        """그리퍼 동작 중지"""
+        self.get_logger().info('Stopping gripper...')
+
+        self._is_busy = False
+        self._retry_count = 0
+
+        if self._current_state in [GripperState.OPENING, GripperState.CLOSING]:
+            self._current_state = GripperState.IDLE
+            response.success = True
+            response.message = 'Gripper stopped'
+        else:
+            response.success = True
+            response.message = 'Gripper was not moving'
 
         return response
 
@@ -249,19 +364,19 @@ class GripperNode(Node):
         rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not future.done():
-            self.get_logger().error('Failed to send open goal')
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send open goal')
             return False
 
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Open goal rejected')
+            self._set_error(GripperError.GOAL_REJECTED, 'Open goal rejected by action server')
             return False
 
         result_future = goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not result_future.done():
-            self.get_logger().error('Open action timed out')
+            self._set_error(GripperError.ACTION_TIMEOUT, 'Open action timed out')
             return False
 
         result = result_future.result().result
@@ -269,7 +384,7 @@ class GripperNode(Node):
             self._current_width = self._max_width
             self.get_logger().info('Gripper opened successfully')
         else:
-            self.get_logger().error(f'Open failed: {result.error}')
+            self._set_error(GripperError.EXECUTION_FAILED, f'Open failed: {result.error}')
 
         return result.success
 
@@ -289,19 +404,19 @@ class GripperNode(Node):
         rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not future.done():
-            self.get_logger().error('Failed to send close goal')
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send close goal')
             return False
 
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Close goal rejected')
+            self._set_error(GripperError.GOAL_REJECTED, 'Close goal rejected by action server')
             return False
 
         result_future = goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not result_future.done():
-            self.get_logger().error('Close action timed out')
+            self._set_error(GripperError.ACTION_TIMEOUT, 'Close action timed out')
             return False
 
         result = result_future.result().result
@@ -309,7 +424,7 @@ class GripperNode(Node):
             self._current_width = 0.0
             self.get_logger().info('Gripper closed successfully')
         else:
-            self.get_logger().error(f'Close failed: {result.error}')
+            self._set_error(GripperError.EXECUTION_FAILED, f'Close failed: {result.error}')
 
         return result.success
 
@@ -334,19 +449,19 @@ class GripperNode(Node):
         rclpy.spin_until_future_complete(self, future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not future.done():
-            self.get_logger().error('Failed to send grasp goal')
+            self._set_error(GripperError.COMMUNICATION_ERROR, 'Failed to send grasp goal')
             return False, False
 
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Grasp goal rejected')
+            self._set_error(GripperError.GOAL_REJECTED, 'Grasp goal rejected by action server')
             return False, False
 
         result_future = goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, result_future, timeout_sec=self.ACTION_TIMEOUT)
 
         if not result_future.done():
-            self.get_logger().error('Grasp action timed out')
+            self._set_error(GripperError.ACTION_TIMEOUT, 'Grasp action timed out')
             return False, False
 
         result = result_future.result().result
