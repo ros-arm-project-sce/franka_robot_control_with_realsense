@@ -334,12 +334,12 @@ git commit -m "fix: 큐 동기화 데드락 해결"
 | 브랜치명 | 담당자 | 작업 내용 | 상태 | 시작일 | 예상 완료 |
 |----------|--------|-----------|------|--------|-----------|
 | `main` | - | 안정 버전 유지 | ✅ 안정 | - | - |
-| `feature/gripper-libfranka` | jse111 | gripper_node libfranka 연동 | 🔄 진행중 | 2024-12-18 | - |
+| `feature/gripper-libfranka` | jse111 | gripper_node libfranka 연동 | ✅ 완료 (PR 대기) | 2024-12-18 | 2024-12-19 |
 
 #### 브랜치별 TODO
 
 <details>
-<summary><b>feature/gripper-libfranka</b> (진행중)</summary>
+<summary><b>feature/gripper-libfranka</b> (완료 - PR 대기)</summary>
 
 **목표:** franka_gripper 액션 클라이언트 연동 (libfranka SDK)
 
@@ -348,15 +348,17 @@ git commit -m "fix: 큐 동기화 데드락 해결"
 **커밋 기록:**
 | 커밋 | 설명 |
 |------|------|
-| `ff94e34` | feat: gripper_node에 franka_gripper 액션 클라이언트 연동 |
-| `48b530a` | feat: gripper_node 에러 핸들링 강화 |
+| `4ef3bc6` | feat: gripper_node에 franka_gripper 액션 클라이언트 연동 |
+| `c182e78` | feat: gripper_node 에러 핸들링 강화 |
+| `d4731ed` | docs: README TODO 리스트 업데이트 및 브랜치 작업 기록 |
+| `b22e8d1` | test: gripper_node 단위 테스트 추가 |
 
 **TODO:**
 - [x] Move 액션 클라이언트 구현 (열기/닫기)
 - [x] Grasp 액션 클라이언트 구현 (파지)
 - [x] 파지력/속도 파라미터화
 - [x] 에러 핸들링 강화 (에러 코드, 복구 서비스)
-- [ ] 단위 테스트 작성
+- [x] 단위 테스트 작성
 
 **구현 내용:**
 - `franka_msgs.action.Move` 액션으로 그리퍼 열기/닫기
