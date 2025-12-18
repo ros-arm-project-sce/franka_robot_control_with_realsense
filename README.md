@@ -2,6 +2,196 @@
 
 Franka Emika 로봇 팔과 Intel RealSense 카메라를 활용한 공구 분류 시스템
 
+---
+
+## 프로젝트 관리
+
+### 관리자 정보
+
+| 역할 | 담당 | 책임 |
+|------|------|------|
+| **중간관리자** | Claude (AI Assistant) | 프로젝트 전반 관리, 코드 리뷰, 브랜치 관리, TODO 추적 |
+
+### 관리자 역할
+
+1. **프로젝트 진행 관리**
+   - 전체 TODO 리스트 관리 및 업데이트
+   - 진행 상황 추적 및 보고
+   - 일정 조율
+
+2. **브랜치 관리**
+   - 브랜치별 작업 현황 추적
+   - PR 리뷰 및 머지 관리
+   - 충돌 해결 지원
+
+3. **코드 품질 관리**
+   - 코드 리뷰 수행
+   - Naming Convention 준수 확인
+   - 코드 스타일 일관성 유지
+
+4. **문서화 관리**
+   - README 최신 상태 유지
+   - API 문서화 관리
+   - 변경 이력 기록
+
+5. **이슈 관리**
+   - 버그 추적
+   - 개선 사항 기록
+   - 우선순위 조정
+
+### 작업 요청 방법
+
+작업자는 다음과 같이 요청해주세요:
+
+```
+1. 새 기능 개발: "feature/xxx 브랜치에서 xxx 기능 개발할게요"
+2. 버그 수정: "fix/xxx 브랜치에서 xxx 버그 수정할게요"
+3. 코드 리뷰 요청: "xxx 브랜치 리뷰 부탁드립니다"
+4. 머지 요청: "xxx 브랜치 main에 머지해주세요"
+5. TODO 업데이트: "xxx 항목 완료했습니다"
+```
+
+---
+
+## 작업자 필독 가이드
+
+> **중요:** 모든 작업자는 작업 전 이 섹션을 반드시 읽어주세요.
+
+### 1. 작업 시작 전 필수 체크리스트
+
+```bash
+# ✅ 반드시 수행할 것
+□ git fetch origin && git pull origin main  # 최신 코드 동기화
+□ README.md 확인하여 본인 브랜치 TODO 확인
+□ Conflict 현황 테이블에서 본인 브랜치 상태 확인
+□ 관리자 피드백 확인 (있는 경우)
+```
+
+### 2. 브랜치 생성 규칙
+
+| 작업 유형 | 브랜치 명명 규칙 | 예시 |
+|----------|-----------------|------|
+| 새 기능 | `feature/<기능명>` | `feature/gripper-action` |
+| 버그 수정 | `fix/<이슈명>` | `fix/queue-deadlock` |
+| 문서 작업 | `docs/<문서명>` | `docs/api-guide` |
+| 리팩토링 | `refactor/<대상>` | `refactor/motion-queue` |
+
+### 3. 커밋 규칙
+
+**커밋 메시지 형식:**
+```
+<type>: <subject>
+
+<body> (선택)
+```
+
+**Type:**
+- `feat`: 새 기능
+- `fix`: 버그 수정
+- `docs`: 문서
+- `refactor`: 리팩토링
+- `test`: 테스트
+- `chore`: 기타
+
+**예시:**
+```bash
+git commit -m "feat: MoveGroup 액션 클라이언트 구현"
+git commit -m "fix: 큐 동기화 데드락 해결"
+```
+
+### 4. 코드 작성 규칙
+
+#### Naming Convention (필수 준수)
+
+| 요소 | 규칙 | 올바른 예 | 잘못된 예 |
+|------|------|----------|----------|
+| 파일명 | snake_case | `gripper_node.py` | `gripperNode.py` |
+| 클래스 | PascalCase | `GripperNode` | `gripper_node` |
+| 함수/변수 | snake_case | `open_gripper()` | `openGripper()` |
+| 상수 | UPPER_SNAKE | `MAX_FORCE` | `maxForce` |
+| private | _ prefix | `_internal_state` | `internalState` |
+
+#### ROS 2 토픽/서비스 명명
+
+```
+토픽: <노드명>/<기능>
+서비스: <노드명>/<동작>
+
+예시:
+- gripper/is_grasping (토픽)
+- gripper/open (서비스)
+- robot/target_pose (토픽)
+- robot/move_home (서비스)
+```
+
+### 5. 작업 중 해야 할 것
+
+1. **정기적인 커밋**
+   - 논리적 단위로 자주 커밋
+   - 하루 작업 끝나면 반드시 푸시
+
+2. **README 업데이트**
+   - 본인 브랜치 TODO 체크리스트 업데이트
+   - 발견한 개선 사항 기록
+   - 이슈 발생 시 기록
+
+3. **main과 동기화**
+   ```bash
+   # 주기적으로 (최소 하루 1회)
+   git fetch origin
+   git rebase origin/main
+   ```
+
+### 6. PR(Pull Request) 요청 전 체크리스트
+
+```bash
+□ 모든 TODO 항목 완료 확인
+□ 코드 테스트 완료
+□ Naming Convention 준수 확인
+□ main과 conflict 없음 확인
+□ README의 "리뷰 요청 사항" 작성
+□ 커밋 히스토리 정리 (필요시 squash)
+```
+
+### 7. 관리자에게 요청해야 하는 것
+
+| 상황 | 요청 방법 |
+|------|----------|
+| Conflict 해결 어려움 | "xxx 브랜치 conflict 해결 도움 요청" |
+| 코드 리뷰 요청 | "xxx 브랜치 리뷰 부탁드립니다" |
+| main 머지 요청 | "xxx 브랜치 main 머지 요청" |
+| 새 브랜치 TODO 생성 | "feature/xxx 브랜치 TODO 생성 요청" |
+| 이슈/버그 보고 | "xxx 이슈 발견: (상세 내용)" |
+
+### 8. 금지 사항
+
+```
+❌ main 브랜치에 직접 push 금지
+❌ force push는 본인 브랜치에만 (main 절대 금지)
+❌ 다른 사람 브랜치 임의 수정 금지
+❌ 테스트 안 된 코드 PR 금지
+❌ README TODO 업데이트 없이 작업 완료 선언 금지
+```
+
+### 9. 문제 발생 시 대응
+
+| 문제 | 대응 방법 |
+|------|----------|
+| Conflict 발생 | README Conflict 현황에 기록 → 관리자 요청 |
+| 빌드 에러 | 본인 브랜치에서 해결 후 푸시 |
+| 테스트 실패 | 수정 후 재테스트, PR 보류 |
+| 설계 변경 필요 | 관리자와 상의 후 진행 |
+
+### 최근 업데이트 기록
+
+| 날짜 | 내용 | 담당 |
+|------|------|------|
+| 2024-12-18 | 프로젝트 초기 구조 설정 | Claude |
+| 2024-12-18 | gripper_node, robot_control_node 스켈레톤 생성 | Claude |
+| 2024-12-18 | README TODO 리스트, 브랜치 관리 섹션 추가 | Claude |
+
+---
+
 ## 프로젝트 개요
 
 이 프로젝트는 Franka Emika Panda 로봇 팔과 Intel RealSense 깊이 카메라를 사용하여 공구를 자동으로 인식하고 분류하는 시스템입니다.
@@ -165,6 +355,11 @@ Franka Emika 로봇 팔과 Intel RealSense 카메라를 활용한 공구 분류 
 **리뷰 요청 사항:**
 - (PR 시 리뷰어가 확인해야 할 사항)
 
+**🔧 관리자 피드백:**
+- (관리자가 코드 리뷰 후 피드백 작성)
+
+**⚠️ Conflict 상태:** 없음
+
 </details>
 
 <details>
@@ -184,6 +379,11 @@ Franka Emika 로봇 팔과 Intel RealSense 카메라를 활용한 공구 분류 
 
 **리뷰 요청 사항:**
 - (PR 시 리뷰어가 확인해야 할 사항)
+
+**🔧 관리자 피드백:**
+- (관리자가 코드 리뷰 후 피드백 작성)
+
+**⚠️ Conflict 상태:** 없음
 
 </details>
 
@@ -205,6 +405,11 @@ Franka Emika 로봇 팔과 Intel RealSense 카메라를 활용한 공구 분류 
 **리뷰 요청 사항:**
 - (PR 시 리뷰어가 확인해야 할 사항)
 
+**🔧 관리자 피드백:**
+- (관리자가 코드 리뷰 후 피드백 작성)
+
+**⚠️ Conflict 상태:** 없음
+
 </details>
 
 <details>
@@ -224,7 +429,52 @@ Franka Emika 로봇 팔과 Intel RealSense 카메라를 활용한 공구 분류 
 **리뷰 요청 사항:**
 - (PR 시 리뷰어가 확인해야 할 사항)
 
+**🔧 관리자 피드백:**
+- (관리자가 코드 리뷰 후 피드백 작성)
+
+**⚠️ Conflict 상태:** 없음
+
 </details>
+
+### 브랜치 Conflict 해결 가이드
+
+**Conflict 발생 시 처리 절차:**
+
+```bash
+# 1. main 브랜치 최신화
+git checkout main
+git pull origin main
+
+# 2. 작업 브랜치로 이동
+git checkout feature/your-branch
+
+# 3. main 변경사항 rebase (권장) 또는 merge
+git rebase main
+# 또는
+git merge main
+
+# 4. Conflict 발생 파일 확인
+git status
+
+# 5. Conflict 해결 후
+git add <resolved-files>
+git rebase --continue  # rebase인 경우
+# 또는
+git commit  # merge인 경우
+
+# 6. 강제 푸시 (rebase인 경우)
+git push -f origin feature/your-branch
+```
+
+**Conflict 해결 요청:**
+- 해결이 어려운 경우 관리자에게 요청
+- README의 해당 브랜치 섹션에 Conflict 상태 업데이트
+
+### Conflict 현황
+
+| 브랜치 | main과 충돌 | 충돌 파일 | 상태 | 해결 담당 |
+|--------|-------------|-----------|------|-----------|
+| *(현재 충돌 없음)* | | | | |
 
 ### 완료된 브랜치 기록
 
