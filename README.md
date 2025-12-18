@@ -189,6 +189,7 @@ git commit -m "fix: 큐 동기화 데드락 해결"
 | 2024-12-18 | 프로젝트 초기 구조 설정 | Claude |
 | 2024-12-18 | gripper_node, robot_control_node 스켈레톤 생성 | Claude |
 | 2024-12-18 | README TODO 리스트, 브랜치 관리 섹션 추가 | Claude |
+| 2024-12-18 | feature/gripper-libfranka 코드 리뷰 완료 | Claude (관리자) |
 
 ---
 
@@ -376,8 +377,41 @@ git commit -m "fix: 큐 동기화 데드락 해결"
 - franka_msgs 액션 메시지 필드 확인 필요
 - 타임아웃 값 적절성 검토 (현재 10초)
 
-**🔧 관리자 피드백:**
-- (관리자가 코드 리뷰 후 피드백 작성)
+**🔧 관리자 피드백 (2024-12-18):**
+
+✅ **잘된 점:**
+- Naming Convention 완벽 준수 (snake_case, PascalCase, UPPER_SNAKE 모두 OK)
+- `GripperError` enum으로 상세 에러 코드 관리 - 좋은 설계
+- busy 상태 관리로 중복 요청 방지 - 실제 운용시 중요
+- 액션 서버 미연결시 시뮬레이션 모드 fallback - 개발/테스트에 유용
+- README TODO 업데이트 잘 해주셨습니다
+
+⚠️ **개선 필요:**
+1. **`spin_until_future_complete` 블로킹 이슈** (lines 364, 376, 404, 416, 449, 461)
+   - 서비스 콜백 내에서 `rclpy.spin_until_future_complete()` 호출은 블로킹 문제 발생 가능
+   - MultiThreadedExecutor 사용시 데드락 위험
+   - **해결방안:** async/await 패턴 사용 또는 콜백 기반 처리로 변경 권장
+   ```python
+   # 현재 (블로킹)
+   rclpy.spin_until_future_complete(self, future, timeout_sec=...)
+
+   # 권장 (async)
+   async def _execute_open_async(self):
+       future = self._move_action_client.send_goal_async(goal)
+       goal_handle = await future
+       result = await goal_handle.get_result_async()
+   ```
+
+2. **타임아웃 값 하드코딩**
+   - `ACTION_TIMEOUT = 10.0`이 클래스 상수로 되어있으나, 파라미터로 받으면 더 유연
+
+📋 **리뷰 요청 사항 응답:**
+- franka_msgs 액션 메시지 필드: `Move.Goal`에 `width`, `speed` 필드 맞음. `Grasp.Goal`에 `epsilon.inner/outer` 접근 방식 확인 필요 (실제 메시지 정의에 따라 다를 수 있음)
+- 타임아웃 10초: 일반적인 그리퍼 동작에는 충분하나, 느린 속도 설정시 부족할 수 있음
+
+**📊 리뷰 결과: APPROVE (조건부)**
+- blocking 이슈 해결 후 main 머지 가능
+- 또는 현재 상태로 develop에 머지하고 추후 개선 가능
 
 **⚠️ Conflict 상태:** 없음
 
